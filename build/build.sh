@@ -41,10 +41,12 @@ mkdir -p /opt/fakelib && ln -sf "$(gcc -print-file-name=libgcc_eh.a)" /opt/fakel
 rm -rf FFmpeg-n$FF_VER
 git -c http.sslCAInfo="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}" clone -q --depth 1 --branch n$FF_VER https://github.com/FFmpeg/FFmpeg.git FFmpeg-n$FF_VER
 cd FFmpeg-n$FF_VER
+# XC compat patch: segment_list_flags +delete, -user-agent alias, -fix_dts/-nofix_dts (no-op)
+git apply "$(cd "$(dirname "$0")" && pwd)/xc-compat-$FF_VER.patch" || { echo "XC compat patch failed"; exit 1; }
 ./configure \
   --pkg-config-flags="--static" --extra-cflags="-I$SSL/include" \
   --extra-ldflags="-static -L$SSLLIB -L/opt/fakelib" --extra-libs="-lpthread -lm -lstdc++ -ldl" --ld=g++ \
-  --extra-version="xc-static" \
+  --extra-version="xc1-static" \
   --enable-gpl --enable-version3 --enable-static --disable-shared \
   --disable-ffplay --disable-doc --disable-debug \
   --enable-openssl --disable-iconv \
@@ -60,5 +62,5 @@ mkdir -p $OUT/pkg && cp ffmpeg ffprobe $OUT/pkg/
 cd $OUT/pkg
 file ffmpeg | grep -q 'statically linked' || { echo "NOT STATIC"; file ffmpeg; exit 1; }
 ./ffmpeg -version | head -1
-tar czf $OUT/xc-ffmpeg-$FF_VER.tar.gz ffmpeg ffprobe
-cd $OUT && sha256sum xc-ffmpeg-$FF_VER.tar.gz > xc-ffmpeg-$FF_VER.tar.gz.sha256 && cat xc-ffmpeg-$FF_VER.tar.gz.sha256
+tar czf $OUT/xc-ffmpeg-$FF_VER-xc1.tar.gz ffmpeg ffprobe
+cd $OUT && sha256sum xc-ffmpeg-$FF_VER-xc1.tar.gz > xc-ffmpeg-$FF_VER-xc1.tar.gz.sha256 && cat xc-ffmpeg-$FF_VER-xc1.tar.gz.sha256
