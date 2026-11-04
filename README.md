@@ -7,7 +7,8 @@ Version string: `n8.1.3-xc1-static`.
 
 | Release | File | Notes |
 |---|---|---|
-| **v8.1.3-xc1** | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | **use this one** — drop-in for XC |
+| **v8.1.3-xc2** | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
+| v8.1.3-xc1 | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | no drawtext (no harfbuzz) — fingerprinting fails on it |
 | v8.1.3 | `xc-ffmpeg-8.1.3.tar.gz` | unpatched — **do not deploy**: XC live streams fail on it |
 
 ## XC compatibility patch (`build/xc-compat-8.1.3.patch`, ~40 lines)
