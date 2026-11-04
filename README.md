@@ -7,7 +7,8 @@ Version string: `n8.1.3-xc1-static`.
 
 | Release | File | Notes |
 |---|---|---|
-| **v8.1.3-xc1** | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | **use this one** — drop-in for XC |
+| **v8.1.3-xc2** | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. **Pre-release: not yet validated on the lab LB or production.** Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
+| v8.1.3-xc1 | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | current validated release; **no drawtext** (no harfbuzz), so panel fingerprinting fails on it |
 | v8.1.3 | `xc-ffmpeg-8.1.3.tar.gz` | unpatched — **do not deploy**: XC live streams fail on it |
 
 ## XC compatibility patch (`build/xc-compat-8.1.3.patch`, ~40 lines)
@@ -32,3 +33,10 @@ XC's 2018 ffmpeg is itself a patched build. XC's encoded PHP passes options upst
 ## Rebuild
 `build/build.sh` (applies the patch automatically) inside a clean Ubuntu 22.04:
 `docker run --rm -v $PWD/build:/b -v $PWD/out:/out ubuntu:22.04 bash /b/build.sh`
+
+## xc2 notes
+- Fingerprint needs the panel to send a labelled filter graph or `-vf` (ffmpeg 8 rejects an unlabelled
+  `-filter_complex` when `-map 0` has already taken the video stream: "Cannot find an unused video input stream").
+- harfbuzz 15.0.0 (FreeType only), libass 0.17.5 and vid.stab 1.1.2 are built from source, static; see
+  `build/build-xc2.sh`. Generic x86-64 target (no `-march`).
+- `build/test-xc2.sh <bin dir> <FreeSans.ttf> <work dir>` runs the acceptance tests.

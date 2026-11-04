@@ -1,0 +1,120 @@
+diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
+index a256619..e7a8116 100644
+--- a/fftools/ffmpeg_opt.c
++++ b/fftools/ffmpeg_opt.c
+@@ -66,6 +66,7 @@ int do_hex_dump       = 0;
+ int do_pkt_dump       = 0;
+ int copy_ts           = 0;
+ int start_at_zero     = 0;
++static int xc_fix_dts = 0; /* XC compat: -fix_dts/-nofix_dts accepted, no effect */
+ int copy_tb           = -1;
+ int debug_ts          = 0;
+ int exit_on_error     = 0;
+@@ -1756,6 +1757,9 @@ const OptionDef options[] = {
+     { "copyts",                 OPT_TYPE_BOOL, OPT_EXPERT,
+         { &copy_ts },
+         "copy timestamps" },
++    { "fix_dts",                OPT_TYPE_BOOL, OPT_EXPERT,
++        { &xc_fix_dts },
++        "accepted for Xtream Codes compatibility; has no effect" },
+     { "start_at_zero",          OPT_TYPE_BOOL, OPT_EXPERT,
+         { &start_at_zero },
+         "shift input timestamps to start at 0 when using copyts" },
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 549e106..ebe15d4 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -172,6 +172,7 @@ static const AVOption options[] = {
+     { "headers", "set custom HTTP headers, can override built in default headers", OFFSET(headers), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
+     { "content_type", "set a specific content type for the POST messages", OFFSET(content_type), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D | E },
+     { "user_agent", "override User-Agent header", OFFSET(user_agent), AV_OPT_TYPE_STRING, { .str = DEFAULT_USER_AGENT }, 0, 0, D },
++    { "user-agent", "XC compat alias of user_agent", OFFSET(user_agent), AV_OPT_TYPE_STRING, { .str = DEFAULT_USER_AGENT }, 0, 0, D },
+     { "referer", "override referer header", OFFSET(referer), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, D },
+     { "multiple_requests", "use persistent connections", OFFSET(multiple_requests), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, D | E },
+     { "request_size", "size (in bytes) of requests to make", OFFSET(request_size), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, INT64_MAX, D },
+diff --git a/libavformat/segment.c b/libavformat/segment.c
+index 2c7ba0e..34b5942 100644
+--- a/libavformat/segment.c
++++ b/libavformat/segment.c
+@@ -27,6 +27,9 @@
+ #include "config_components.h"
+ 
+ #include <time.h>
++#include <errno.h>
++#include <string.h>
++#include <unistd.h>
+ 
+ #include "avformat.h"
+ #include "internal.h"
+@@ -68,6 +71,7 @@ typedef enum {
+ 
+ #define SEGMENT_LIST_FLAG_CACHE 1
+ #define SEGMENT_LIST_FLAG_LIVE  2
++#define SEGMENT_LIST_FLAG_DELETE 4 ///< XC compat: delete segments that left the list
+ 
+ typedef struct SegmentContext {
+     const AVClass *class;  /**< Class for private options. */
+@@ -128,8 +132,34 @@ typedef struct SegmentContext {
+     SegmentListEntry cur_entry;
+     SegmentListEntry *segment_list_entries;
+     SegmentListEntry *segment_list_entries_end;
++    char *pending_delete;  ///< XC compat: dropped segment, deleted one segment later
+ } SegmentContext;
+ 
++/* XC compat (+delete): full path of a list entry = directory of the output
++ * template + entry basename (minus any entry prefix). */
++static char *seg_entry_path(AVFormatContext *s, SegmentContext *seg, const char *name)
++{
++    char *dir = av_strdup(s->url), *path;
++    size_t plen = seg->entry_prefix ? strlen(seg->entry_prefix) : 0;
++    if (!dir)
++        return NULL;
++    if (plen && !strncmp(name, seg->entry_prefix, plen))
++        name += plen;
++    path = av_asprintf("%s/%s", av_dirname(dir), name);
++    av_free(dir);
++    return path;
++}
++
++static void seg_delete_pending(AVFormatContext *s, SegmentContext *seg)
++{
++    if (!seg->pending_delete)
++        return;
++    if (unlink(seg->pending_delete) < 0 && errno != ENOENT)
++        av_log(s, AV_LOG_WARNING, "failed to delete old segment %s: %s\n",
++               seg->pending_delete, strerror(errno));
++    av_freep(&seg->pending_delete);
++}
++
+ static void print_csv_escaped_str(AVIOContext *ctx, const char *str)
+ {
+     int needs_quoting = !!str[strcspn(str, "\",\n\r")];
+@@ -397,6 +427,12 @@ static int segment_end(AVFormatContext *s, int write_trailer, int is_last)
+             if (seg->list_size && seg->segment_count >= seg->list_size) {
+                 entry = seg->segment_list_entries;
+                 seg->segment_list_entries = seg->segment_list_entries->next;
++                if (seg->list_flags & SEGMENT_LIST_FLAG_DELETE) {
++                    /* delete the segment dropped LAST time; keep this one one
++                     * more cycle for players that just fetched the list */
++                    seg_delete_pending(s, seg);
++                    seg->pending_delete = seg_entry_path(s, seg, entry->filename);
++                }
+                 av_freep(&entry->filename);
+                 av_freep(&entry);
+             }
+@@ -669,6 +705,7 @@ static void seg_free(AVFormatContext *s)
+     av_freep(&seg->frames);
+     av_freep(&seg->cur_entry.filename);
+     av_freep(&seg->temp_list_filename);
++    av_freep(&seg->pending_delete);
+ 
+     cur = seg->segment_list_entries;
+     while (cur) {
+@@ -1053,6 +1090,7 @@ static const AVOption options[] = {
+     { "segment_list_flags","set flags affecting segment list generation", OFFSET(list_flags), AV_OPT_TYPE_FLAGS, {.i64 = SEGMENT_LIST_FLAG_CACHE }, 0, UINT_MAX, E, .unit = "list_flags"},
+     { "cache",             "allow list caching",                                    0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_CACHE }, INT_MIN, INT_MAX,   E, .unit = "list_flags"},
+     { "live",              "enable live-friendly list generation (useful for HLS)", 0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_LIVE }, INT_MIN, INT_MAX,    E, .unit = "list_flags"},
++    { "delete",            "delete segment files that are no longer part of the playlist (XC compat)", 0, AV_OPT_TYPE_CONST, {.i64 = SEGMENT_LIST_FLAG_DELETE }, INT_MIN, INT_MAX, E, .unit = "list_flags"},
+ 
+     { "segment_list_size", "set the maximum number of playlist entries", OFFSET(list_size), AV_OPT_TYPE_INT,  {.i64 = 0},     0, INT_MAX, E },
+ 
