@@ -7,8 +7,8 @@ Version string: `n8.1.3-xc1-static`.
 
 | Release | File | Notes |
 |---|---|---|
-| **v8.1.3-xc2** | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
-| v8.1.3-xc1 | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | no drawtext (no harfbuzz) — fingerprinting fails on it |
+| **v8.1.3-xc2** | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. **Validated on the Halyard lab LB (2026-11-04). For Halyard 1.0.4+ nodes only — see below.** Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
+| v8.1.3-xc1 | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | **no drawtext** (no harfbuzz), so panel fingerprinting fails on it |
 | v8.1.3 | `xc-ffmpeg-8.1.3.tar.gz` | unpatched — **do not deploy**: XC live streams fail on it |
 
 ## XC compatibility patch (`build/xc-compat-8.1.3.patch`, ~40 lines)
@@ -33,3 +33,34 @@ XC's 2018 ffmpeg is itself a patched build. XC's encoded PHP passes options upst
 ## Rebuild
 `build/build.sh` (applies the patch automatically) inside a clean Ubuntu 22.04:
 `docker run --rm -v $PWD/build:/b -v $PWD/out:/out ubuntu:22.04 bash /b/build.sh`
+
+## xc2 notes
+- Fingerprint needs the panel to send a labelled filter graph or `-vf` (ffmpeg 8 rejects an unlabelled
+  `-filter_complex` when `-map 0` has already taken the video stream: "Cannot find an unused video input stream").
+- harfbuzz 15.0.0 (FreeType only), libass 0.17.5 and vid.stab 1.1.2 are built from source, static; see
+  `build/build-xc2.sh`. Generic x86-64 target (no `-march`).
+- `build/test-xc2.sh <bin dir> <FreeSans.ttf> <work dir>` runs the acceptance tests.
+
+## Which build on which node (2026-11-04)
+| Node runs | Use |
+|---|---|
+| Halyard 1.0.4+ panel code | **xc2** |
+| Original XC panel code | **keep the 2018 build (N-92517)** — neither xc1 nor xc2 |
+
+The original XC panel builds two command forms that every ffmpeg 8.x refuses: fingerprint
+(`-filter_complex "drawtext=..."` + `-map 0`) and transcode filters (unlabelled `-filter_complex` + `-map 0`).
+On a node running the original panel code those features fail with any 8.x build. Halyard 1.0.4 fixes both
+(fingerprint uses `-vf`; filters become one `-vf` chain).
+
+## xc2 validation (2026-11-03/04)
+- Build tests (`build/test-xc2.sh`, Ubuntu 22.04 builder): all pass except the original-panel command form above.
+- Halyard lab LB (Ubuntu 22.04, 48 threads), installed over xc1: drawtext present; panel command audit identical
+  to xc1 for live copy (8 shapes), fetch arguments (user agent, headers, cookies, reconnect, proxy), transcode
+  without filters, VOD (mp4/mkv/ts copy + transcode) and probes (stream / fetch / admin); fingerprint end to end
+  through the admin API on a live TS viewer: text drawn; transcode filters (scale, delogo, yadif, logo, combined,
+  two outputs HLS + FLV) 13/13 OK with Halyard 1.0.4's command builder; a real panel-started channel with
+  bitrate + scale + delogo + logo gave 640x360 H.264 + AAC with logo and delogo visible; full Halyard regression
+  suite equal to the previous baseline.
+- Oldest fleet OS (Ubuntu 14.04.6, kernel 3.13, glibc 2.19): ffmpeg/ffprobe start, drawtext present, fingerprint
+  command exits 0 with H.264 + AAC output and the text drawn, XC segmenter with +live+delete exits 0 and deletes
+  old segments.
