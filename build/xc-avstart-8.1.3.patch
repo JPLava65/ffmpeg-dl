@@ -1,0 +1,103 @@
+diff --git a/fftools/ffmpeg_mux.c b/fftools/ffmpeg_mux.c
+index 25f66dd..04e05fd 100644
+--- a/fftools/ffmpeg_mux.c
++++ b/fftools/ffmpeg_mux.c
+@@ -18,6 +18,7 @@
+ 
+ #include <stdatomic.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "ffmpeg.h"
+@@ -457,6 +458,61 @@ finish:
+     return ret;
+ }
+ 
++/* XC (xc3): with stream copy, ffmpeg starts audio at once but video only at its next keyframe, so the first
++ * segment of a live channel begins with up to one GOP of sound without picture (players show nothing, or stall).
++ * For the live output muxers (segment, mpegts, hls) with a copied video stream, every other copied stream now
++ * waits for the first video keyframe and starts at its timestamp. If no video keyframe arrives within 10 s of
++ * stream time, the wait is given up, so a channel whose video is missing still starts.
++ * XC_NO_WAIT_VIDEO=1 in the environment turns it off. Returns 1 when the packet must be dropped. */
++static int xc_wait_video(Muxer *mux, OutputStream *ost, MuxStream *ms, AVPacket *pkt, int64_t dts)
++{
++    OutputFile *of = &mux->of;
++    int64_t ts = pkt->pts != AV_NOPTS_VALUE ? av_rescale_q(pkt->pts, pkt->time_base, AV_TIME_BASE_Q) : dts;
++
++    if (!mux->xc_wait_init) {
++        const char *n = (mux->fc && mux->fc->oformat) ? mux->fc->oformat->name : "";
++        mux->xc_wait_init = 1;
++        if (!getenv("XC_NO_WAIT_VIDEO") &&
++            (!strcmp(n, "segment") || !strcmp(n, "mpegts") || !strcmp(n, "hls"))) {
++            for (int i = 0; i < of->nb_streams; i++) {
++                OutputStream *o = of->streams[i];
++                if (o->type == AVMEDIA_TYPE_VIDEO && !o->enc &&
++                    !(o->st->disposition & AV_DISPOSITION_ATTACHED_PIC))
++                    mux->xc_wait = 1;
++            }
++        }
++    }
++    if (!mux->xc_wait)
++        return 0;
++
++    if (ost->type == AVMEDIA_TYPE_VIDEO) {
++        if (!ost->enc && !mux->xc_video_started && (pkt->flags & AV_PKT_FLAG_KEY)) {
++            mux->xc_video_started = 1;
++            mux->xc_video_ts      = ts;
++        }
++        return 0;
++    }
++
++    if (mux->xc_video_started) {
++        /* packets from before the first picture that arrive after it */
++        return !ms->streamcopy_started && ts != AV_NOPTS_VALUE &&
++               mux->xc_video_ts != AV_NOPTS_VALUE && ts < mux->xc_video_ts;
++    }
++
++    if (ts == AV_NOPTS_VALUE)
++        return 1;
++    if (!mux->xc_have_first) {
++        mux->xc_have_first = 1;
++        mux->xc_first_ts   = ts;
++    }
++    if (ts - mux->xc_first_ts > 10 * (int64_t)AV_TIME_BASE || ts < mux->xc_first_ts - 10 * (int64_t)AV_TIME_BASE) {
++        av_log(mux, AV_LOG_WARNING, "XC: no video keyframe within 10 s, starting the other streams without it\n");
++        mux->xc_wait = 0;
++        return 0;
++    }
++    return 1;
++}
++
+ static int of_streamcopy(OutputFile *of, OutputStream *ost, AVPacket *pkt)
+ {
+     MuxStream  *ms = ms_from_ost(ost);
+@@ -473,6 +529,9 @@ static int of_streamcopy(OutputFile *of, OutputStream *ost, AVPacket *pkt)
+         !ms->copy_initial_nonkeyframes)
+         return AVERROR(EAGAIN);
+ 
++    if (xc_wait_video(mux_from_of(of), ost, ms, pkt, dts))
++        return AVERROR(EAGAIN);
++
+     if (!ms->streamcopy_started) {
+         if (!ms->copy_prior_start &&
+             (pkt->pts == AV_NOPTS_VALUE ?
+diff --git a/fftools/ffmpeg_mux.h b/fftools/ffmpeg_mux.h
+index 4ca8ab7..aaf00e6 100644
+--- a/fftools/ffmpeg_mux.h
++++ b/fftools/ffmpeg_mux.h
+@@ -119,6 +119,14 @@ typedef struct Muxer {
+ 
+     SyncQueue              *sq_mux;
+     AVPacket               *sq_pkt;
++
++    /* XC (xc3): live copy outputs start every stream at the first video keyframe, see xc_wait_video() */
++    int                     xc_wait_init;
++    int                     xc_wait;
++    int                     xc_video_started;
++    int64_t                 xc_video_ts;
++    int                     xc_have_first;
++    int64_t                 xc_first_ts;
+ } Muxer;
+ 
+ int mux_check_init(void *arg);
