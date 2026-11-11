@@ -7,7 +7,8 @@ Version string: `n8.1.3-xc1-static`.
 
 | Release | File | Notes |
 |---|---|---|
-| **v8.1.3-xc2** | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. **Validated on the Halyard lab LB (2026-11-04). For Halyard 1.0.4+ nodes only — see below.** Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
+| **v8.1.3-xc3** | `xc-ffmpeg-8.1.3-xc3.tar.gz` (+ `.sha256`) | xc2 + `build/xc-avstart-8.1.3.patch`: on live copy outputs, audio starts with the picture (see "xc3" below). Same panel commands as xc2; xc2 ↔ xc3 swap either way. Halyard panel code only. Build: `build/build-xc3.sh`; tests: `build/test-xc2.sh` + `build/test-xc3-avstart.sh` |
+| v8.1.3-xc2 | `xc-ffmpeg-8.1.3-xc2.tar.gz` (+ `.sha256`) | xc1 + libharfbuzz (drawtext: the panel's fingerprint), libass, libzimg, libvidstab. **Validated on the Halyard lab LB (2026-11-04). For Halyard 1.0.4+ nodes only — see below.** Build: `build/build-xc2.sh`; tests: `build/test-xc2.sh` |
 | v8.1.3-xc1 | `xc-ffmpeg-8.1.3-xc1.tar.gz` (+ `.sha256`) | **no drawtext** (no harfbuzz), so panel fingerprinting fails on it |
 | v8.1.3 | `xc-ffmpeg-8.1.3.tar.gz` | unpatched — **do not deploy**: XC live streams fail on it |
 
@@ -44,8 +45,8 @@ XC's 2018 ffmpeg is itself a patched build. XC's encoded PHP passes options upst
 ## Which build on which node (2026-11-04)
 | Node runs | Use |
 |---|---|
-| Halyard 1.0.4+ panel code | **xc2** |
-| Original XC panel code | **keep the 2018 build (N-92517)** — neither xc1 nor xc2 |
+| Halyard 1.0.4+ panel code | **xc2** or **xc3** |
+| Original XC panel code | **keep the 2018 build (N-92517)** — not xc1, xc2 or xc3 |
 
 The original XC panel builds two command forms that every ffmpeg 8.x refuses: fingerprint
 (`-filter_complex "drawtext=..."` + `-map 0`) and transcode filters (unlabelled `-filter_complex` + `-map 0`).
@@ -64,3 +65,28 @@ On a node running the original panel code those features fail with any 8.x build
 - Oldest fleet OS (Ubuntu 14.04.6, kernel 3.13, glibc 2.19): ffmpeg/ffprobe start, drawtext present, fingerprint
   command exits 0 with H.264 + AAC output and the text drawn, XC segmenter with +live+delete exits 0 and deletes
   old segments.
+
+## xc3: audio starts with the picture (2026-11-11)
+**What it changes.** With stream copy, ffmpeg starts audio at once but video only at its next keyframe, so a live
+channel's first segment began with up to one GOP of sound without picture. xc3 adds one patch,
+`build/xc-avstart-8.1.3.patch` (`fftools/ffmpeg_mux.c`, `ffmpeg_mux.h`): for the output muxers **segment, mpegts and
+hls**, when the output has a **copied** video stream (not cover art), every other copied stream waits for the first
+video keyframe and starts at its timestamp.
+- **Safety net:** if no video keyframe arrives within 10 s of stream time, ffmpeg logs
+  `XC: no video keyframe within 10 s, starting the other streams without it` and starts the other streams anyway.
+- **Not affected:** audio-only outputs, outputs whose video is transcoded, other muxers (mp4, mkv, flv, ...).
+- **Off switch:** `XC_NO_WAIT_VIDEO=1` in ffmpeg's environment gives the xc2 behaviour.
+- **No new command-line option**, so the panel's commands are identical and xc2 and xc3 can be swapped either way.
+- Everything else is xc2: FFmpeg n8.1.3, same configure line except `--extra-version=xc3-static`, same libraries.
+
+**Node rule (same as xc2):** Halyard panel code only. Nodes with the original panel code keep the 2018 build.
+
+**Tests (2026-11-11):** `build/test-xc2.sh` on xc3 in Ubuntu 14.04, 18.04, 20.04, 22.04 and 24.04 userlands: same
+results as xc2. `build/test-xc3-avstart.sh` (xc3 next to xc2):
+| Test | xc2 | xc3 |
+|---|---|---|
+| copy to segment, input cut mid-GOP (2 s GOP) | audio 1.168 s before video | audio 0.005 s after video |
+| 20 s GOP, cut 3 s in | audio from the start | warning logged, audio starts 10.0 s after the input's first audio, exit 0 |
+| `XC_NO_WAIT_VIDEO=1` | — | audio 1.168 s before video (= xc2) |
+| audio-only copy; video transcoded + audio copied | all 2774 audio packets | all 2774 audio packets (unchanged) |
+| `-user-agent` + `-nofix_dts` on an HTTP input | sent, exit 0 | sent, exit 0 |
